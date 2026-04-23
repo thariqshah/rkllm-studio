@@ -14,11 +14,11 @@ RUN apk add --no-cache \
 WORKDIR /usr/src/rkllama
 COPY . .
 
-# Copy the RKLLM library into the build environment
-# (Requires you to run 'cp /usr/lib/librkllmrt.so backend/' on the board first)
-ENV LIBRARY_PATH=/usr/src/rkllama
+# Verify the library is actually in the build context
+RUN ls -la librkllmrt.so || (echo "Library not found in backend/ folder!" && exit 1)
 
-# Build the application
+# Build the application with dynamic linking enabled
+ENV RUSTFLAGS="-C target-feature=-crt-static -L /usr/src/rkllama"
 RUN cargo build --release
 
 # --- Runtime Stage ---
