@@ -1,4 +1,4 @@
-use libc::{c_char, c_void, c_int, c_float};
+use libc::{c_char, c_void, c_int};
 use std::ffi::{CStr, CString};
 use std::ptr;
 use tokio::sync::mpsc;

@@ -111,7 +111,7 @@ async fn load_model(
     let mut current_engine = state.engine.lock().await;
     *current_engine = Some(engine);
 
-    Json(serde_json::Value::String("Model loaded successfully".to_string()))
+    Json(serde_json::Value::String("Model loaded successfully".to_string())).into_response()
 }
 
 async fn chat_completions(
