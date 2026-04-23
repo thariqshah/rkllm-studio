@@ -1,31 +1,33 @@
 # --- Build Stage ---
-FROM rust:1.77-slim-bookworm AS builder
+FROM rust:1.77-alpine AS builder
+
+# Install build dependencies for Alpine
+RUN apk add --no-cache \
+    musl-dev \
+    pkgconfig \
+    openssl-dev \
+    clang-dev \
+    gcc \
+    g++ \
+    make
 
 WORKDIR /usr/src/rkllama
 COPY . .
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    clang \
-    libclang-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 # Build the application
-# Note: In a real Rockchip environment, you would need to cross-compile or build on-device
 RUN cargo build --release
 
 # --- Runtime Stage ---
-FROM debian:bookworm-slim
+FROM alpine:latest
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+# Install glibc compatibility and runtime libs for Rockchip compatibility
+RUN apk add --no-cache \
+    gcompat \
+    libstdc++ \
     ca-certificates \
-    libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+    libgcc
 
 # Copy the binary from the builder stage
 COPY --from=builder /usr/src/rkllama/target/release/rkllama-backend /app/rkllama-backend
