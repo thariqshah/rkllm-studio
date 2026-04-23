@@ -1,5 +1,5 @@
 # --- Build Stage ---
-FROM rust:1.77-alpine AS builder
+FROM rust:alpine AS builder
 
 # Install build dependencies for Alpine
 RUN apk add --no-cache \
