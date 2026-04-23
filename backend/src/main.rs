@@ -11,7 +11,6 @@ use tokio::sync::{Mutex, mpsc};
 use tower_http::cors::CorsLayer;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
-use std::borrow::Cow;
 
 // Use the prelude for correct imports from rkllm-rs
 use rkllm_rs::prelude::*;
@@ -20,8 +19,8 @@ mod openai;
 use openai::{Model, ModelList, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChoice, ChatMessage, Usage};
 
 struct AppState {
-    // LLMHandle is thread-safe and reference counted internally
-    engine: Mutex<Option<LLMHandle>>,
+    // LLMHandle does not implement Clone, so we must wrap it in an Arc to share it across threads
+    engine: Mutex<Option<Arc<LLMHandle>>>,
 }
 
 // Handler that bridges the RKLLM callback to a Tokio mpsc channel
@@ -175,7 +174,8 @@ async fn load_model(
     };
     
     let mut current_engine = state.engine.lock().await;
-    *current_engine = Some(handle);
+    // Wrap the handle in an Arc so we can share it across requests
+    *current_engine = Some(Arc::new(handle));
 
     Json(serde_json::Value::String("Model loaded successfully".to_string())).into_response()
 }
@@ -184,14 +184,12 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    // 1. Clone the Arc first to avoid borrowing from the argument
-    let state_arc = Arc::clone(&state);
-
-    // 2. Extract the engine in a completely isolated block
-    let engine = {
-        let guard = state_arc.engine.lock().await;
+    // Clone the Arc while holding the lock. This is cheap and ensures the handle
+    // stays alive independently of the state's lock.
+    let engine_arc = {
+        let guard = state.engine.lock().await;
         match guard.as_ref() {
-            Some(e) => e.clone(),
+            Some(e) => Arc::clone(e),
             None => return (StatusCode::BAD_REQUEST, "No model loaded").into_response(),
         }
     };
@@ -200,12 +198,13 @@ async fn chat_completions(
     let (tx, rx) = mpsc::channel(1024);
     let handler = StreamHandler { tx };
 
-    // 3. Move EVERYTHING into the task. The compiler now sees that 'engine', 'prompt',
-    // and 'handler' are all owned and independent of the original 'state' argument.
+    // Move the cloned Arc into the task. Since Arc<LLMHandle> is 'static,
+    // this satisfies the spawn_blocking requirement.
     tokio::task::spawn_blocking(move || {
-        // Use Prompt variant with Owned Cow to ensure it is 'static
-        let input = RKLLMInput::Prompt(Cow::Owned(prompt));
-        if let Err(e) = engine.run(input, None, handler) {
+        // Use the recommended prompt constructor
+        let input = RKLLMInput::prompt(prompt);
+        // Arc<T> implements Deref<Target=T>, so we can call run() directly
+        if let Err(e) = engine_arc.run(input, None, handler) {
             tracing::error!("Inference error: {}", e);
         }
     });
