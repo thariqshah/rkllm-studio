@@ -4,8 +4,8 @@
 # Targeted for Rockchip RK3588 (FriendlyElec CM3588)
 
 # 1. Environment Setup
-export LIBRARY_PATH=/usr/lib:$LIBRARY_PATH
-export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+export LIBRARY_PATH=/ai-shit/docker-runtime:/usr/lib:$LIBRARY_PATH
+export LD_LIBRARY_PATH=/ai-shit/docker-runtime:/usr/lib:$LD_LIBRARY_PATH
 export RUST_LOG=info
 
 PROJECT_ROOT=$(pwd)
