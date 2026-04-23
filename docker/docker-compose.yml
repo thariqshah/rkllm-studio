@@ -23,7 +23,6 @@ services:
     volumes:
       - ../frontend:/app
       - /app/node_modules
-    restart: unless-stopped
     depends_on:
       - backend
     restart: unless-stopped
