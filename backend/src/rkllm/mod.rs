@@ -52,6 +52,9 @@ pub struct RKLLMParam {
     pub mirostat_tau: f32,
     pub mirostat_eta: f32,
     pub is_async: bool,
+    pub log_level: i32,
+    pub n_batch: i32,
+    pub num_npu_core: i32,
     pub extend_param: RKLLMExtendParam,
 }
 
@@ -148,12 +151,15 @@ impl RKLLMEngine {
             
             let c_model_path = CString::new(model_path).map_err(|_| "Invalid path")?;
             param.model_path = c_model_path.as_ptr();
-            param.max_context_len = 512;
+            param.max_context_len = 2048;
             param.max_new_tokens = 512;
             param.top_k = 40;
             param.top_p = 0.9;
             param.temperature = 0.8;
+            param.repeat_penalty = 1.1;
             param.is_async = true;
+            param.n_batch = 1;
+            param.num_npu_core = 3;
 
             let ret = rkllm_init(&mut handle, &mut param, rkllm_callback_wrapper);
             if ret != 0 {
