@@ -7,7 +7,7 @@ services:
       network: host
     network_mode: host
     volumes:
-      - ../models:/app/models
+      - /volume/docker-user/container-storage/rkllm/models:/app/models
     devices:
       - "/dev/rknn:/dev/rknn"
     restart: unless-stopped
