@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, mpsc};
 use tower_http::cors::CorsLayer;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
+use std::borrow::Cow;
 
 // Use the prelude for correct imports from rkllm-rs
 use rkllm_rs::prelude::*;
@@ -30,9 +31,10 @@ struct StreamHandler {
 
 impl RkllmCallbackHandler for StreamHandler {
     fn handle(&mut self, result: Option<RKLLMResult<'_>>, state: LLMCallState) {
-        // If we have a result, send the text
+        // If we have a result, send the text. In rkllm-rs, result.text is a Cow, not an Option.
         if let Some(res) = result {
-            if let Some(text) = res.text {
+            let text = res.text.as_ref();
+            if !text.is_empty() {
                 let _ = self.tx.try_send(text.to_string());
             }
         }
@@ -185,9 +187,10 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
+    // Explicitly clone the handle while the lock is held to satisfy 'static requirement
     let engine = {
-        let engine_opt = state.engine.lock().await;
-        match engine_opt.as_ref() {
+        let guard = state.engine.lock().await;
+        match guard.as_ref() {
             Some(e) => e.clone(),
             None => return (StatusCode::BAD_REQUEST, "No model loaded").into_response(),
         }
@@ -198,9 +201,10 @@ async fn chat_completions(
     
     let handler = StreamHandler { tx };
 
-    // Run inference in a blocking task because rkllm_run is synchronous in the underlying C
+    // Run inference in a blocking task
     tokio::task::spawn_blocking(move || {
-        let input = RKLLMInput::prompt(prompt); // Use the prompt constructor
+        // Use Cow::Owned to ensure the input owns its data and is 'static
+        let input = RKLLMInput::Prompt(Cow::Owned(prompt));
         if let Err(e) = engine.run(input, None, handler) {
             tracing::error!("Inference error: {}", e);
         }
