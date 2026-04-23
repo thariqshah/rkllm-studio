@@ -11,41 +11,69 @@ use tokio::sync::{Mutex, mpsc};
 use tower_http::cors::CorsLayer;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
+use std::ffi::{CString, c_void};
+use std::ptr;
 
-// Use the prelude for correct imports from rkllm-rs
-use rkllm_rs::prelude::*;
+// Use rkllm-sys for raw FFI control, but rkllm-rs for the handle wrapper if possible
+use rkllm_sys_rs::{
+    rkllm_init, rkllm_run, rkllm_destroy, rkllm_result, rkllm_call_state,
+    rkllm_input, rkllm_input_type, rkllm_param, rkllm_extend_param, rkllm_infer_param,
+};
 
 mod openai;
 use openai::{Model, ModelList, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChoice, ChatMessage, Usage};
 
-struct AppState {
-    // LLMHandle does not implement Clone, so we must wrap it in an Arc to share it across threads
-    engine: Mutex<Option<Arc<LLMHandle>>>,
+// Thread-safe wrapper for the raw handle
+struct SafeLLMHandle {
+    handle: *mut c_void,
 }
 
-// Handler that bridges the RKLLM callback to a Tokio mpsc channel
-struct StreamHandler {
+unsafe impl Send for SafeLLMHandle {}
+unsafe impl Sync for SafeLLMHandle {}
+
+impl Drop for SafeLLMHandle {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { rkllm_destroy(self.handle); }
+        }
+    }
+}
+
+struct AppState {
+    engine: Mutex<Option<Arc<SafeLLMHandle>>>,
+}
+
+// Data passed to the C callback
+struct RequestCtx {
     tx: mpsc::Sender<String>,
 }
 
-impl RkllmCallbackHandler for StreamHandler {
-    fn handle(&mut self, result: Option<RKLLMResult<'_>>, state: LLMCallState) {
-        if let Some(res) = result {
-            let text = res.text.as_ref();
+unsafe extern "C" fn rkllm_callback(
+    result: *mut rkllm_result,
+    userdata: *mut c_void,
+    state: rkllm_call_state
+) {
+    if userdata.is_null() { return; }
+    let ctx = &*(userdata as *const RequestCtx);
+
+    if !result.is_null() {
+        let res = &*result;
+        if !res.text.is_null() {
+            let text = std::ffi::CStr::from_ptr(res.text).to_string_lossy().into_owned();
             if !text.is_empty() {
-                let _ = self.tx.try_send(text.to_string());
+                let _ = ctx.tx.try_send(text);
             }
         }
-        
-        match state {
-            LLMCallState::Finish => {
-                let _ = self.tx.try_send("[DONE]".to_string());
-            }
-            LLMCallState::Error => {
-                let _ = self.tx.try_send("[ERROR]".to_string());
-            }
-            _ => {}
+    }
+
+    match state {
+        rkllm_call_state::RKLLM_RUN_FINISH => {
+            let _ = ctx.tx.try_send("[DONE]".to_string());
         }
+        rkllm_call_state::RKLLM_RUN_ERROR => {
+            let _ = ctx.tx.try_send("[ERROR]".to_string());
+        }
+        _ => {}
     }
 }
 
@@ -58,7 +86,7 @@ async fn main() {
     });
 
     let app = Router::new()
-        .route("/", get(|| async { "RKLLama API Server is running (using rkllm-rs)!" }))
+        .route("/", get(|| async { "RKLLama API Server is running (Native FFI)!" }))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/load", post(load_model))
@@ -158,24 +186,36 @@ async fn load_model(
     };
     
     let model_path = model_path_buf.to_string_lossy().to_string();
-    tracing::info!("Loading model using rkllm-rs: {}", model_path);
+    tracing::info!("Initializing RKLLM with raw FFI: {}", model_path);
     
-    let mut config = LLMConfig::default();
-    config.model_path = Some(model_path);
-    config.max_context_len = 2048;
-    config.max_new_tokens = 512;
-    config.top_k = 40;
-    config.top_p = 0.9;
-    config.temperature = 0.8;
+    let c_model_path = CString::new(model_path).unwrap();
     
-    let handle = match rkllm_rs::prelude::init(config) {
-        Ok(h) => h,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to initialize RKLLM: {}", e)).into_response(),
-    };
-    
-    let mut current_engine = state.engine.lock().await;
-    // Wrap the handle in an Arc so we can share it across requests
-    *current_engine = Some(Arc::new(handle));
+    unsafe {
+        let mut param: rkllm_param = std::mem::zeroed();
+        param.model_path = c_model_path.as_ptr() as *mut i8;
+        param.max_context_len = 2048;
+        param.max_new_tokens = 512;
+        param.top_k = 40;
+        param.top_p = 0.9;
+        param.temperature = 0.8;
+        
+        // Correct alignment and defaults for RK3588
+        let mut extend_param: rkllm_extend_param = std::mem::zeroed();
+        extend_param.base_domain_id = 1;
+        // Big cores mask: (1<<4 | 1<<5 | 1<<6 | 1<<7) = 240
+        extend_param.enabled_cpus_mask = 240; 
+        param.extend_param = &mut extend_param;
+        
+        let mut handle: *mut c_void = ptr::null_mut();
+        let ret = rkllm_init(&mut handle, &mut param, Some(rkllm_callback));
+        
+        if ret != 0 {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("rkllm_init failed with code {}", ret)).into_response();
+        }
+        
+        let mut current_engine = state.engine.lock().await;
+        *current_engine = Some(Arc::new(SafeLLMHandle { handle }));
+    }
 
     Json(serde_json::Value::String("Model loaded successfully".to_string())).into_response()
 }
@@ -184,9 +224,7 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    // Clone the Arc while holding the lock. This is cheap and ensures the handle
-    // stays alive independently of the state's lock.
-    let engine_arc = {
+    let engine = {
         let guard = state.engine.lock().await;
         match guard.as_ref() {
             Some(e) => Arc::clone(e),
@@ -194,18 +232,29 @@ async fn chat_completions(
         }
     };
 
-    let prompt = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
+    let prompt_str = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
     let (tx, rx) = mpsc::channel(1024);
-    let handler = StreamHandler { tx };
-
-    // Move the cloned Arc into the task. Since Arc<LLMHandle> is 'static,
-    // this satisfies the spawn_blocking requirement.
+    
     tokio::task::spawn_blocking(move || {
-        // Use the recommended prompt constructor
-        let input = RKLLMInput::prompt(prompt);
-        // Arc<T> implements Deref<Target=T>, so we can call run() directly
-        if let Err(e) = engine_arc.run(input, None, handler) {
-            tracing::error!("Inference error: {}", e);
+        let c_prompt = CString::new(prompt_str).unwrap();
+        let ctx = RequestCtx { tx };
+        
+        unsafe {
+            let mut input: rkllm_input = std::mem::zeroed();
+            input.type_ = rkllm_input_type::RKLLM_INPUT_PROMPT;
+            input.__bindgen_anon_1.prompt = c_prompt.as_ptr() as *mut i8;
+            
+            let mut infer_param: rkllm_infer_param = std::mem::zeroed();
+            
+            // This blocks until rkllm_callback sends RKLLM_RUN_FINISH
+            let ret = rkllm_run(engine.handle, &mut input, &mut infer_param, &ctx as *const _ as *mut c_void);
+            if ret != 0 {
+                tracing::error!("rkllm_run failed with code {}", ret);
+            }
+            
+            // Ensure c_prompt and ctx stay alive until rkllm_run returns
+            drop(c_prompt);
+            drop(ctx);
         }
     });
 
@@ -220,7 +269,7 @@ async fn chat_completions(
                     id: "chat-123".to_string(),
                     object: "chat.completion.chunk".to_string(),
                     created: chrono::Utc::now().timestamp(),
-                    model: "gemma-3-4b".to_string(),
+                    model: "rkllm".to_string(),
                     choices: vec![ChatCompletionChoice {
                         index: 0,
                         message: ChatMessage {
