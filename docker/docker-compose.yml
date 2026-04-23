@@ -3,11 +3,10 @@ services:
     build:
       context: ../backend
       dockerfile: ../docker/Dockerfile
-    ports:
-      - "8080:8080"
+    # Use host network to fix DNS and connectivity issues on the board
+    network_mode: host
     volumes:
       - ../models:/app/models
-      # Map the RKNN device for NPU access
     devices:
       - "/dev/rknn:/dev/rknn"
     restart: unless-stopped
@@ -17,10 +16,11 @@ services:
   frontend:
     image: node:20-slim
     working_dir: /app
+    # Use host network for the frontend as well
+    network_mode: host
     volumes:
       - ../frontend:/app
-    ports:
-      - "3000:3000"
+    # Note: Since we are in host mode, ports are exposed automatically on 3000 and 8080
     command: sh -c "npm install && npm run dev -- --host"
     depends_on:
       - backend
