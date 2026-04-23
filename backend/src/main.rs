@@ -11,7 +11,6 @@ use tokio::sync::{Mutex, mpsc};
 use tower_http::cors::CorsLayer;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
-use std::borrow::Cow;
 
 // Use the prelude for correct imports from rkllm-rs
 use rkllm_rs::prelude::*;
@@ -31,15 +30,14 @@ struct StreamHandler {
 
 impl RkllmCallbackHandler for StreamHandler {
     fn handle(&mut self, result: Option<RKLLMResult<'_>>, state: LLMCallState) {
-        // If we have a result, send the text. In rkllm-rs, result.text is a Cow, not an Option.
         if let Some(res) = result {
+            // result.text is a Cow, just use as_ref() to get a string slice
             let text = res.text.as_ref();
             if !text.is_empty() {
                 let _ = self.tx.try_send(text.to_string());
             }
         }
         
-        // Handle final states
         match state {
             LLMCallState::Finish => {
                 let _ = self.tx.try_send("[DONE]".to_string());
@@ -164,14 +162,13 @@ async fn load_model(
     tracing::info!("Loading model using rkllm-rs: {}", model_path);
     
     let mut config = LLMConfig::default();
-    config.model_path = model_path;
+    config.model_path = Some(model_path); // Library expects Option<String>
     config.max_context_len = 2048;
     config.max_new_tokens = 512;
     config.top_k = 40;
     config.top_p = 0.9;
     config.temperature = 0.8;
     
-    // Using the init function from rkllm_rs::prelude
     let handle = match rkllm_rs::prelude::init(config) {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to initialize RKLLM: {}", e)).into_response(),
@@ -187,7 +184,8 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    // Explicitly clone the handle while the lock is held to satisfy 'static requirement
+    // Extract and clone the engine in a dedicated scope to ensure the lock is dropped
+    // and avoid any lifetime issues with the MutexGuard in the spawn_blocking closure.
     let engine = {
         let guard = state.engine.lock().await;
         match guard.as_ref() {
@@ -201,10 +199,10 @@ async fn chat_completions(
     
     let handler = StreamHandler { tx };
 
-    // Run inference in a blocking task
+    // Move everything into the task
     tokio::task::spawn_blocking(move || {
-        // Use Cow::Owned to ensure the input owns its data and is 'static
-        let input = RKLLMInput::Prompt(Cow::Owned(prompt));
+        // Use the recommended constructor for RKLLMInput
+        let input = RKLLMInput::prompt(prompt); 
         if let Err(e) = engine.run(input, None, handler) {
             tracing::error!("Inference error: {}", e);
         }
