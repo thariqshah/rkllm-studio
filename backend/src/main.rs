@@ -150,21 +150,22 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    let engine_opt = state.engine.lock().await;
-    let engine = match engine_opt.as_ref() {
-        Some(e) => e,
-        None => return (StatusCode::BAD_REQUEST, "No model loaded").into_response(),
+    // Clone the engine while the lock is held, then drop the lock immediately
+    let engine = {
+        let engine_opt = state.engine.lock().await;
+        match engine_opt.as_ref() {
+            Some(e) => e.clone(),
+            None => return (StatusCode::BAD_REQUEST, "No model loaded").into_response(),
+        }
     };
 
     let prompt = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
-    
-    // Create channel for streaming
+
     let (tx, rx) = mpsc::channel(100);
     
-    // Run inference in a separate task
-    let engine_clone = engine.clone();
+    // Spawn the inference task with the cloned engine
     tokio::spawn(async move {
-        let _ = engine_clone.run(&prompt, tx).await;
+        let _ = engine.run(&prompt, tx).await;
     });
 
     if req.stream.unwrap_or(false) {

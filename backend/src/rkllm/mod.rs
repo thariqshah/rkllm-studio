@@ -112,6 +112,7 @@ extern "C" {
     pub fn rkllm_destroy(handle: LLMHandle) -> c_int;
 }
 
+#[derive(Clone)]
 pub struct RKLLMEngine {
     handle: LLMHandle,
 }
