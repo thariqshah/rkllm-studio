@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, mpsc};
 use tower_http::cors::CorsLayer;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
+use std::borrow::Cow;
 
 // Use the prelude for correct imports from rkllm-rs
 use rkllm_rs::prelude::*;
@@ -31,7 +32,6 @@ struct StreamHandler {
 impl RkllmCallbackHandler for StreamHandler {
     fn handle(&mut self, result: Option<RKLLMResult<'_>>, state: LLMCallState) {
         if let Some(res) = result {
-            // result.text is a Cow, just use as_ref() to get a string slice
             let text = res.text.as_ref();
             if !text.is_empty() {
                 let _ = self.tx.try_send(text.to_string());
@@ -162,7 +162,7 @@ async fn load_model(
     tracing::info!("Loading model using rkllm-rs: {}", model_path);
     
     let mut config = LLMConfig::default();
-    config.model_path = Some(model_path); // Library expects Option<String>
+    config.model_path = Some(model_path);
     config.max_context_len = 2048;
     config.max_new_tokens = 512;
     config.top_k = 40;
@@ -184,10 +184,12 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    // Extract and clone the engine in a dedicated scope to ensure the lock is dropped
-    // and avoid any lifetime issues with the MutexGuard in the spawn_blocking closure.
+    // 1. Clone the Arc first to avoid borrowing from the argument
+    let state_arc = Arc::clone(&state);
+
+    // 2. Extract the engine in a completely isolated block
     let engine = {
-        let guard = state.engine.lock().await;
+        let guard = state_arc.engine.lock().await;
         match guard.as_ref() {
             Some(e) => e.clone(),
             None => return (StatusCode::BAD_REQUEST, "No model loaded").into_response(),
@@ -196,13 +198,13 @@ async fn chat_completions(
 
     let prompt = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
     let (tx, rx) = mpsc::channel(1024);
-    
     let handler = StreamHandler { tx };
 
-    // Move everything into the task
+    // 3. Move EVERYTHING into the task. The compiler now sees that 'engine', 'prompt',
+    // and 'handler' are all owned and independent of the original 'state' argument.
     tokio::task::spawn_blocking(move || {
-        // Use the recommended constructor for RKLLMInput
-        let input = RKLLMInput::prompt(prompt); 
+        // Use Prompt variant with Owned Cow to ensure it is 'static
+        let input = RKLLMInput::Prompt(Cow::Owned(prompt));
         if let Err(e) = engine.run(input, None, handler) {
             tracing::error!("Inference error: {}", e);
         }
