@@ -1,4 +1,4 @@
-use libc::{c_char, c_void, c_int, float_t};
+use libc::{c_char, c_void, c_int, c_float};
 use std::ffi::{CStr, CString};
 use std::ptr;
 use tokio::sync::mpsc;
@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 // Opaque handle to the LLM instance
 pub type LLMHandle = *mut c_void;
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub enum LLMCallState {
@@ -16,15 +17,17 @@ pub enum LLMCallState {
 }
 
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct RKLLMResult {
     pub text: *const c_char,
     pub token_id: i32,
-    pub last_hidden_layer: *mut c_void, // Simplified
-    pub logits: *mut c_void,            // Simplified
+    pub last_hidden_layer: *mut c_void,
+    pub logits: *mut c_void,
     pub perf_info: RKLLMPerfInfo,
 }
 
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct RKLLMPerfInfo {
     pub prefill_tokens: i32,
     pub prefill_time: f32,
@@ -53,18 +56,22 @@ pub struct RKLLMParam {
 }
 
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct RKLLMExtendParam {
     pub base_npu_core: i32,
-    pub reserved: [u8; 104], // 104 bytes padding as found in repo
+    pub reserved: [u8; 104],
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub struct RKLLMInput {
     pub input_type: RKLLMInputType,
     pub input: RKLLMInputUnion,
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub enum RKLLMInputType {
     RKLLM_INPUT_PROMPT = 0,
     RKLLM_INPUT_TOKEN = 1,
@@ -73,22 +80,23 @@ pub enum RKLLMInputType {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub union RKLLMInputUnion {
     pub prompt: *const c_char,
     pub tokens: RKLLMTokens,
-    // embed and multimodal omitted for simplicity
 }
 
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct RKLLMTokens {
     pub tokens: *mut i32,
     pub n_tokens: i32,
 }
 
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct RKLLMInferParam {
-    pub mode: i32, // 0 for normal, 1 for generate
-    // ... other fields
+    pub mode: i32,
 }
 
 #[link(name = "rkllmrt")]
@@ -122,7 +130,6 @@ unsafe extern "C" fn rkllm_callback_wrapper(result: *mut RKLLMResult, userdata: 
     match state {
         LLMCallState::RKLLM_RUN_FINISH => {
             let _ = ctx.tx.try_send("\n[DONE]".to_string());
-            // In a real implementation, we would free the Box<CallbackCtx> here
             let _ = Box::from_raw(userdata as *mut CallbackCtx);
         }
         LLMCallState::RKLLM_RUN_ERROR => {

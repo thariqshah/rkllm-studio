@@ -7,7 +7,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use futures::stream::Stream;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::Mutex;
