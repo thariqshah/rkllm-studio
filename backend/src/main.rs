@@ -12,14 +12,14 @@ use tower_http::cors::CorsLayer;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
 
-// Use the official rkllm-rs crate
-use rkllm_rs::{LLMHandle, LLMConfig, RKLLMInput, RkllmCallbackHandler, RKLLMResult, LLMCallState};
+// Use the prelude for correct imports from rkllm-rs
+use rkllm_rs::prelude::*;
 
 mod openai;
 use openai::{Model, ModelList, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChoice, ChatMessage, Usage};
 
 struct AppState {
-    // LLMHandle is already thread-safe and reference counted internally by rkllm-rs
+    // LLMHandle is thread-safe and reference counted internally
     engine: Mutex<Option<LLMHandle>>,
 }
 
@@ -29,11 +29,15 @@ struct StreamHandler {
 }
 
 impl RkllmCallbackHandler for StreamHandler {
-    fn handle(&self, result: RKLLMResult, state: LLMCallState) {
-        if let Some(text) = result.text {
-            let _ = self.tx.try_send(text);
+    fn handle(&mut self, result: Option<RKLLMResult<'_>>, state: LLMCallState) {
+        // If we have a result, send the text
+        if let Some(res) = result {
+            if let Some(text) = res.text {
+                let _ = self.tx.try_send(text.to_string());
+            }
         }
         
+        // Handle final states
         match state {
             LLMCallState::Finish => {
                 let _ = self.tx.try_send("[DONE]".to_string());
@@ -157,7 +161,6 @@ async fn load_model(
     let model_path = model_path_buf.to_string_lossy().to_string();
     tracing::info!("Loading model using rkllm-rs: {}", model_path);
     
-    // Create config similar to our previous manual one
     let mut config = LLMConfig::default();
     config.model_path = model_path;
     config.max_context_len = 2048;
@@ -166,8 +169,8 @@ async fn load_model(
     config.top_p = 0.9;
     config.temperature = 0.8;
     
-    // Switch to rkllm-rs handles the FFI setup internally
-    let handle = match LLMHandle::init(config) {
+    // Using the init function from rkllm_rs::prelude
+    let handle = match rkllm_rs::prelude::init(config) {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to initialize RKLLM: {}", e)).into_response(),
     };
@@ -197,7 +200,7 @@ async fn chat_completions(
 
     // Run inference in a blocking task because rkllm_run is synchronous in the underlying C
     tokio::task::spawn_blocking(move || {
-        let input = RKLLMInput::Prompt(prompt);
+        let input = RKLLMInput::prompt(prompt); // Use the prompt constructor
         if let Err(e) = engine.run(input, None, handler) {
             tracing::error!("Inference error: {}", e);
         }
