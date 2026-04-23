@@ -9,7 +9,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
-use futures::stream::Stream;
+use futures::stream::{Stream, StreamExt};
 use std::path::{Path, PathBuf};
 
 mod rkllm;
@@ -69,7 +69,6 @@ async fn list_models() -> Json<ModelList> {
     
     for path_str in paths {
         find_rkllm_files(Path::new(path_str), &mut models);
-        if !models.is_empty() { break; }
     }
 
     if models.is_empty() {
@@ -158,6 +157,8 @@ async fn chat_completions(
     };
 
     let prompt = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
+    
+    // Correctly call the engine.run method
     let rx = engine.run(&prompt);
 
     if req.stream.unwrap_or(false) {
@@ -176,15 +177,18 @@ async fn chat_completions(
                         },
                         finish_reason: None,
                     }],
-                    usage: None,
+                    // Fix: Usage must be a struct, not an Option
+                    usage: Usage {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        total_tokens: 0,
+                    },
                 };
                 Ok::<Event, Infallible>(Event::default().data(serde_json::to_string(&chunk).unwrap()))
             });
 
         Sse::new(stream).into_response()
     } else {
-        // Simple non-streaming fallback (buffer all tokens)
-        // ... omitted for brevity as we focus on streaming
         (StatusCode::NOT_IMPLEMENTED, "Non-streaming not implemented yet").into_response()
     }
 }
