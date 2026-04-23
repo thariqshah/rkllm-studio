@@ -1,4 +1,4 @@
-use libc::{c_char, c_void, c_int};
+use libc::{c_char, c_void, c_int, c_float, size_t};
 use std::ffi::{CStr, CString};
 use std::ptr;
 use tokio::sync::mpsc;
@@ -21,18 +21,35 @@ pub enum LLMCallState {
 pub struct RKLLMResult {
     pub text: *const c_char,
     pub token_id: i32,
-    pub last_hidden_layer: *mut c_void,
-    pub logits: *mut c_void,
-    pub perf_info: RKLLMPerfInfo,
+    pub last_hidden_layer: RKLLMResultLastHiddenLayer,
+    pub logits: RKLLMResultLogits,
+    pub perf: RKLLMPerfStat,
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct RKLLMPerfInfo {
+pub struct RKLLMResultLastHiddenLayer {
+    pub hidden_states: *mut f32,
+    pub embd_size: i32,
+    pub num_tokens: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RKLLMResultLogits {
+    pub logits: *mut f32,
+    pub vocab_size: i32,
+    pub num_tokens: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RKLLMPerfStat {
+    pub prefill_time_ms: f32,
     pub prefill_tokens: i32,
-    pub prefill_time: f32,
-    pub decode_tokens: i32,
-    pub decode_time: f32,
+    pub generate_time_ms: f32,
+    pub generate_tokens: i32,
+    pub memory_usage_mb: f32,
 }
 
 pub type LLMResultCallback = unsafe extern "C" fn(result: *mut RKLLMResult, userdata: *mut c_void, state: LLMCallState);
@@ -42,8 +59,8 @@ pub struct RKLLMParam {
     pub model_path: *const c_char,
     pub max_context_len: i32,
     pub max_new_tokens: i32,
-    pub top_k: i32,
-    pub n_keep: i32, 
+    pub top_k: f32,
+    pub n_keep: i32,
     pub top_p: f32,
     pub temperature: f32,
     pub repeat_penalty: f32,
@@ -58,12 +75,18 @@ pub struct RKLLMParam {
     pub img_end: *const c_char,
     pub img_content: *const c_char,
     pub extend_param: RKLLMExtendParam,
+    pub use_gpu: bool,
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct RKLLMExtendParam {
-    pub base_npu_core: i32,
+    pub base_domain_id: i32,
+    pub embed_flash: i8,
+    pub enabled_cpus_num: i8,
+    pub enabled_cpus_mask: u32,
+    pub n_batch: u8,
+    pub use_cross_attn: i8,
     pub reserved: [u8; 104],
 }
 
@@ -75,6 +98,8 @@ pub const RKLLM_INPUT_MULTIMODAL: i32 = 3;
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct RKLLMInput {
+    pub role: *const c_char,
+    pub enable_thinking: bool,
     pub input_type: i32,
     pub input: RKLLMInputUnion,
 }
@@ -83,20 +108,42 @@ pub struct RKLLMInput {
 #[derive(Copy, Clone)]
 pub union RKLLMInputUnion {
     pub prompt: *const c_char,
-    pub tokens: RKLLMTokens,
+    pub embed: RKLLMEmbedInput,
+    pub token: RKLLMTokenInput,
+    pub multimodal: RKLLMMultiModelInput,
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct RKLLMTokens {
-    pub tokens: *mut i32,
-    pub n_tokens: i32,
+pub struct RKLLMEmbedInput {
+    pub embed: *mut f32,
+    pub n_tokens: size_t,
 }
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct RKLLMTokenInput {
+    pub input_ids: *mut i32,
+    pub n_tokens: size_t,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RKLLMMultiModelInput {
+    pub prompt: *const c_char,
+    pub image_embed: *mut f32,
+    pub n_image_tokens: size_t,
+    pub n_image: size_t,
+    pub image_width: size_t,
+    pub image_height: size_t,
+}
+
+#[repr(C)]
 pub struct RKLLMInferParam {
     pub mode: i32,
+    pub lora_params: *mut c_void,
+    pub prompt_cache_params: *mut c_void,
+    pub keep_history: i32,
 }
 
 #[link(name = "rkllmrt")]
@@ -115,7 +162,7 @@ pub struct RKLLMEngine {
 struct CallbackCtx {
     tx: mpsc::Sender<String>,
     done_tx: mpsc::Sender<()>,
-    _prompt: CString, // Keep alive
+    _prompt: CString,
 }
 
 unsafe extern "C" fn rkllm_callback_wrapper(result: *mut RKLLMResult, userdata: *mut c_void, state: LLMCallState) {
@@ -152,11 +199,16 @@ impl RKLLMEngine {
             param.model_path = c_model_path.as_ptr();
             param.max_context_len = 2048;
             param.max_new_tokens = 512;
-            param.top_k = 40;
+            param.top_k = 40.0;
             param.top_p = 0.9;
             param.temperature = 0.8;
             param.repeat_penalty = 1.1;
             param.is_async = true;
+            param.use_gpu = true;
+
+            // Affinity for RK3588 Big Cores
+            param.extend_param.enabled_cpus_num = 4;
+            param.extend_param.enabled_cpus_mask = (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7);
 
             let ret = rkllm_init(&mut handle, &mut param, rkllm_callback_wrapper);
             if ret != 0 {
@@ -179,10 +231,11 @@ impl RKLLMEngine {
             });
             let userdata = Box::into_raw(ctx) as *mut c_void;
             
-            // Get the pointer from the CString that is now safely tucked inside the Box
             let persistent_prompt_ptr = (*(userdata as *mut CallbackCtx))._prompt.as_ptr();
             
             let mut input = RKLLMInput {
+                role: ptr::null(),
+                enable_thinking: false,
                 input_type: RKLLM_INPUT_PROMPT,
                 input: RKLLMInputUnion { prompt: persistent_prompt_ptr },
             };
