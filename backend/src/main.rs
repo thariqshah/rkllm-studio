@@ -104,11 +104,22 @@ async fn load_model(
     }
 
     let model_path = match final_path {
-        Some(p) => p,
+        Some(p) => {
+            // Convert to absolute path for the C library
+            match std::fs::canonicalize(&p) {
+                Ok(abs_path) => abs_path.to_string_lossy().to_string(),
+                Err(_) => p,
+            }
+        },
         None => return (axum::http::StatusCode::NOT_FOUND, "Model file not found").into_response(),
     };
     
-    let engine = RKLLMEngine::new(&model_path).unwrap();
+    tracing::info!("Loading model from absolute path: {}", model_path);
+    
+    let engine = match RKLLMEngine::new(&model_path) {
+        Ok(e) => e,
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load model: {}", e)).into_response(),
+    };
     let mut current_engine = state.engine.lock().await;
     *current_engine = Some(engine);
 
