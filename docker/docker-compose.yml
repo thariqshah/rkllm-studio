@@ -13,16 +13,3 @@ services:
     restart: unless-stopped
     environment:
       - RUST_LOG=info
-
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-      network: host
-    network_mode: host
-    volumes:
-      - ../frontend:/app
-      - /app/node_modules
-    depends_on:
-      - backend
-    restart: unless-stopped
