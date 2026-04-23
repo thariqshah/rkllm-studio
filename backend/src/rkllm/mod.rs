@@ -67,21 +67,16 @@ pub struct RKLLMExtendParam {
     pub reserved: [u8; 104],
 }
 
+pub const RKLLM_INPUT_PROMPT: i32 = 0;
+pub const RKLLM_INPUT_TOKEN: i32 = 1;
+pub const RKLLM_INPUT_EMBED: i32 = 2;
+pub const RKLLM_INPUT_MULTIMODAL: i32 = 3;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct RKLLMInput {
-    pub input_type: RKLLMInputType,
+    pub input_type: i32,
     pub input: RKLLMInputUnion,
-}
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub enum RKLLMInputType {
-    RKLLM_INPUT_PROMPT = 0,
-    RKLLM_INPUT_TOKEN = 1,
-    RKLLM_INPUT_EMBED = 2,
-    RKLLM_INPUT_MULTIMODAL = 3,
 }
 
 #[repr(C)]
@@ -188,7 +183,7 @@ impl RKLLMEngine {
             let persistent_prompt_ptr = (*(userdata as *mut CallbackCtx))._prompt.as_ptr();
             
             let mut input = RKLLMInput {
-                input_type: RKLLMInputType::RKLLM_INPUT_PROMPT,
+                input_type: RKLLM_INPUT_PROMPT,
                 input: RKLLMInputUnion { prompt: persistent_prompt_ptr },
             };
             
