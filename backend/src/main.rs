@@ -46,19 +46,23 @@ async fn main() {
 async fn list_models() -> Json<ModelList> {
     let mut models = Vec::new();
     
-    if let Ok(entries) = std::fs::read_dir("models") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("rkllm") {
-                if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
-                    models.push(Model {
-                        id: file_name.to_string(),
-                        object: "model".to_string(),
-                        created: chrono::Utc::now().timestamp(),
-                        owned_by: "rkllama".to_string(),
-                    });
+    let paths = vec!["models", "../models"];
+    for path_str in paths {
+        if let Ok(entries) = std::fs::read_dir(path_str) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("rkllm") {
+                    if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
+                        models.push(Model {
+                            id: file_name.to_string(),
+                            object: "model".to_string(),
+                            created: chrono::Utc::now().timestamp(),
+                            owned_by: "rkllama".to_string(),
+                        });
+                    }
                 }
             }
+            if !models.is_empty() { break; }
         }
     }
 
@@ -81,9 +85,29 @@ async fn load_model(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let model_path = payload.get("path").and_then(|v| v.as_str()).unwrap_or("models/gemma.rkllm");
+    let model_name = payload.get("path").and_then(|v| v.as_str()).unwrap_or("gemma.rkllm");
     
-    let engine = RKLLMEngine::new(model_path).unwrap();
+    // Check multiple paths for the model
+    let possible_paths = vec![
+        format!("models/{}", model_name),
+        format!("../models/{}", model_name),
+        model_name.to_string(), // Direct path
+    ];
+
+    let mut final_path = None;
+    for p in possible_paths {
+        if std::path::Path::new(&p).exists() {
+            final_path = Some(p);
+            break;
+        }
+    }
+
+    let model_path = match final_path {
+        Some(p) => p,
+        None => return (axum::http::StatusCode::NOT_FOUND, "Model file not found").into_response(),
+    };
+    
+    let engine = RKLLMEngine::new(&model_path).unwrap();
     let mut current_engine = state.engine.lock().await;
     *current_engine = Some(engine);
 
