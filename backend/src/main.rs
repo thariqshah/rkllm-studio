@@ -7,15 +7,15 @@ use axum::{
 };
 use std::convert::Infallible;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tower_http::cors::CorsLayer;
-use futures::stream::{Stream, StreamExt};
+use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
 
 mod rkllm;
 mod openai;
 
-use rkllm::{RKLLMEngine, RKLLMResult};
+use rkllm::RKLLMEngine;
 use openai::{Model, ModelList, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChoice, ChatMessage, Usage};
 
 struct AppState {
@@ -158,8 +158,14 @@ async fn chat_completions(
 
     let prompt = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
     
-    // Correctly call the engine.run method
-    let rx = engine.run(&prompt);
+    // Create channel for streaming
+    let (tx, rx) = mpsc::channel(100);
+    
+    // Run inference in a separate task
+    let engine_clone = engine.clone();
+    tokio::spawn(async move {
+        let _ = engine_clone.run(&prompt, tx).await;
+    });
 
     if req.stream.unwrap_or(false) {
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
@@ -177,7 +183,6 @@ async fn chat_completions(
                         },
                         finish_reason: None,
                     }],
-                    // Fix: Usage must be a struct, not an Option
                     usage: Usage {
                         prompt_tokens: 0,
                         completion_tokens: 0,
