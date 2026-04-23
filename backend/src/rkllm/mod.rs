@@ -8,7 +8,7 @@ pub type LLMHandle = *mut c_void;
 
 #[allow(non_camel_case_types)]
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum LLMCallState {
     RKLLM_RUN_NORMAL = 0,
     RKLLM_RUN_WAITING = 1,
