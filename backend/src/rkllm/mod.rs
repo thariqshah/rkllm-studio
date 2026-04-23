@@ -180,13 +180,16 @@ impl RKLLMEngine {
             let ctx = Box::new(CallbackCtx { 
                 tx, 
                 done_tx, 
-                _prompt: c_prompt.clone() 
+                _prompt: c_prompt 
             });
             let userdata = Box::into_raw(ctx) as *mut c_void;
             
+            // Get the pointer from the CString that is now safely tucked inside the Box
+            let persistent_prompt_ptr = (*(userdata as *mut CallbackCtx))._prompt.as_ptr();
+            
             let mut input = RKLLMInput {
                 input_type: RKLLMInputType::RKLLM_INPUT_PROMPT,
-                input: RKLLMInputUnion { prompt: c_prompt.as_ptr() },
+                input: RKLLMInputUnion { prompt: persistent_prompt_ptr },
             };
             
             let mut infer_param = std::mem::zeroed::<RKLLMInferParam>();
