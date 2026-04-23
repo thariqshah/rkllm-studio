@@ -59,7 +59,7 @@ pub struct RKLLMParam {
     pub model_path: *const c_char,
     pub max_context_len: i32,
     pub max_new_tokens: i32,
-    pub top_k: f32,
+    pub top_k: i32,
     pub n_keep: i32,
     pub top_p: f32,
     pub temperature: f32,
@@ -87,7 +87,7 @@ pub struct RKLLMExtendParam {
     pub enabled_cpus_mask: u32,
     pub n_batch: u8,
     pub use_cross_attn: i8,
-    pub reserved: [u8; 104],
+    pub reserved: [u8; 116], // 4+1+1+4+1+1 + 116 = 128 bytes
 }
 
 pub const RKLLM_INPUT_PROMPT: i32 = 0;
@@ -196,8 +196,8 @@ impl RKLLMEngine {
             param.model_path = c_model_path.as_ptr();
             param.max_context_len = 2048;
             param.max_new_tokens = 512;
-            param.top_k = 40.0;
-            param.top_p = 0.9;
+            param.top_k = 40;
+            param.n_keep = 0;
             param.temperature = 0.8;
             param.repeat_penalty = 1.1;
             param.skip_special_token = true;
