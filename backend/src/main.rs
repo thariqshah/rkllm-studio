@@ -71,6 +71,10 @@ async fn list_models() -> Json<ModelList> {
         find_rkllm_files(Path::new(path_str), &mut models);
     }
 
+    // Deduplicate by ID
+    let mut seen = std::collections::HashSet::new();
+    models.retain(|m| seen.insert(m.id.clone()));
+
     if models.is_empty() {
         models.push(Model {
             id: "placeholder-no-models".to_string(),
