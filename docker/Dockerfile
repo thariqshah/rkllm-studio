@@ -14,6 +14,10 @@ RUN apk add --no-cache \
 WORKDIR /usr/src/rkllama
 COPY . .
 
+# Copy the RKLLM library into the build environment
+# (Requires you to run 'cp /usr/lib/librkllmrt.so backend/' on the board first)
+ENV LIBRARY_PATH=/usr/src/rkllama
+
 # Build the application
 RUN cargo build --release
 
