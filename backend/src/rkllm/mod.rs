@@ -43,6 +43,7 @@ pub struct RKLLMParam {
     pub max_context_len: i32,
     pub max_new_tokens: i32,
     pub top_k: i32,
+    pub n_keep: i32, 
     pub top_p: f32,
     pub temperature: f32,
     pub repeat_penalty: f32,
@@ -51,10 +52,11 @@ pub struct RKLLMParam {
     pub mirostat: i32,
     pub mirostat_tau: f32,
     pub mirostat_eta: f32,
+    pub skip_special_token: bool,
     pub is_async: bool,
-    pub log_level: i32,
-    pub n_batch: i32,
-    pub num_npu_core: i32,
+    pub img_start: *const c_char,
+    pub img_end: *const c_char,
+    pub img_content: *const c_char,
     pub extend_param: RKLLMExtendParam,
 }
 
@@ -104,6 +106,7 @@ pub struct RKLLMInferParam {
 
 #[link(name = "rkllmrt")]
 extern "C" {
+    pub fn rkllm_createDefaultParam() -> RKLLMParam;
     pub fn rkllm_init(handle: *mut LLMHandle, param: *mut RKLLMParam, callback: LLMResultCallback) -> c_int;
     pub fn rkllm_run(handle: LLMHandle, input: *mut RKLLMInput, infer_param: *mut RKLLMInferParam, userdata: *mut c_void) -> c_int;
     pub fn rkllm_destroy(handle: LLMHandle) -> c_int;
@@ -147,7 +150,7 @@ impl RKLLMEngine {
     pub fn new(model_path: &str) -> Result<Self, String> {
         unsafe {
             let mut handle: LLMHandle = ptr::null_mut();
-            let mut param = std::mem::zeroed::<RKLLMParam>();
+            let mut param = rkllm_createDefaultParam();
             
             let c_model_path = CString::new(model_path).map_err(|_| "Invalid path")?;
             param.model_path = c_model_path.as_ptr();
@@ -158,8 +161,6 @@ impl RKLLMEngine {
             param.temperature = 0.8;
             param.repeat_penalty = 1.1;
             param.is_async = true;
-            param.n_batch = 1;
-            param.num_npu_core = 3;
 
             let ret = rkllm_init(&mut handle, &mut param, rkllm_callback_wrapper);
             if ret != 0 {
