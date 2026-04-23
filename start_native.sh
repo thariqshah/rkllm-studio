@@ -18,23 +18,12 @@ cd $PROJECT_ROOT/backend
 cargo run --release &
 BACKEND_PID=$!
 
-# 3. Start Frontend
-echo "[2/2] Starting React Frontend..."
-cd $PROJECT_ROOT/frontend
-# Ensure dependencies are installed
-if [ ! -d "node_modules" ]; then
-    echo "Installing frontend dependencies first..."
-    npm install
-fi
-npm run dev -- --host &
-FRONTEND_PID=$!
 
 echo "--- Services are running! ---"
-echo "Dashboard: http://aitana:8282"
 echo "API:       http://aitana:8181"
 echo "------------------------------"
 echo "Press Ctrl+C to stop both services."
 
 # 4. Handle Shutdown
-trap "kill $BACKEND_PID $FRONTEND_PID; exit" INT TERM
+trap "kill $BACKEND_PID exit" INT TERM
 wait
