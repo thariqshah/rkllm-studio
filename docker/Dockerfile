@@ -1,46 +1,41 @@
 # --- Build Stage ---
-FROM rust:alpine AS builder
+FROM rust:slim-bookworm AS builder
 
-# Install build dependencies for Alpine
-RUN apk add --no-cache \
-    musl-dev \
-    pkgconfig \
-    openssl-dev \
-    clang-dev \
-    gcc \
-    g++ \
-    make
+# Install build dependencies for Debian
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    clang \
+    libclang-dev \
+    gcc-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/rkllama
 COPY . .
 
-# Verify the library is actually in the build context
+# Verify the library is present
 RUN ls -la librkllmrt.so || (echo "Library not found in backend/ folder!" && exit 1)
 
-# Build the application with dynamic linking enabled
-ENV RUSTFLAGS="-C target-feature=-crt-static -L /usr/src/rkllama"
+# Build the application (using native glibc)
+ENV LIBRARY_PATH=/usr/src/rkllama
 RUN cargo build --release
 
 # --- Runtime Stage ---
-FROM alpine:latest
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install glibc compatibility and runtime libs for Rockchip compatibility
-RUN apk add --no-cache \
-    gcompat \
-    libstdc++ \
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libgcc
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy the binary from the builder stage
+# Copy the binary and the RKLLM library
 COPY --from=builder /usr/src/rkllama/target/release/rkllama-backend /app/rkllama-backend
+COPY --from=builder /usr/src/rkllama/librkllmrt.so /usr/lib/librkllmrt.so
 
-# Create models directory
 RUN mkdir /app/models
 
-# Expose the API port
 EXPOSE 8080
-
-# Run the application
 CMD ["./rkllama-backend"]
