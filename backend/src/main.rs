@@ -44,14 +44,36 @@ async fn main() {
 }
 
 async fn list_models() -> Json<ModelList> {
+    let mut models = Vec::new();
+    
+    if let Ok(entries) = std::fs::read_dir("models") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("rkllm") {
+                if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
+                    models.push(Model {
+                        id: file_name.to_string(),
+                        object: "model".to_string(),
+                        created: chrono::Utc::now().timestamp(),
+                        owned_by: "rkllama".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if models.is_empty() {
+        models.push(Model {
+            id: "placeholder-no-models".to_string(),
+            object: "model".to_string(),
+            created: chrono::Utc::now().timestamp(),
+            owned_by: "rkllama".to_string(),
+        });
+    }
+
     Json(ModelList {
         object: "list".to_string(),
-        data: vec![Model {
-            id: "llama-3-8b".to_string(),
-            object: "model".to_string(),
-            created: 1715000000,
-            owned_by: "rkllama".to_string(),
-        }],
+        data: models,
     })
 }
 
