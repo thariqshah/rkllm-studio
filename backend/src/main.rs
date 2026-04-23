@@ -46,7 +46,7 @@ async fn main() {
 async fn list_models() -> Json<ModelList> {
     let mut models = Vec::new();
     
-    let paths = vec!["/volume/docker-user/container-storage/rkllm/models", "models", "../models"];
+    let paths = vec!["/ai-shit/docker-runtime", "models", "../models"];
     for path_str in paths {
         if let Ok(entries) = std::fs::read_dir(path_str) {
             for entry in entries.flatten() {
@@ -89,7 +89,7 @@ async fn load_model(
     
     // Check multiple paths for the model
     let possible_paths = vec![
-        format!("/volume/docker-user/container-storage/rkllm/models/{}", model_name),
+        format!("/ai-shit/docker-runtime/{}", model_name),
         format!("models/{}", model_name),
         format!("../models/{}", model_name),
         model_name.to_string(), // Direct path
