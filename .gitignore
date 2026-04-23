@@ -1,0 +1,20 @@
+# Rust
+target/
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+
+# OS/IDEs
+.DS_Store
+.vscode/
+.idea/
+
+# Models (too large for git)
+models/*.rkllm
+models/*.bin
+
+# Temporary
+ssh_test.ps1
+rkllama.tar.gz

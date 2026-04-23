@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../models:/app/models
+      # Map the RKNN device for NPU access
+    devices:
+      - "/dev/rknn:/dev/rknn"
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+
+  frontend:
+    image: node:20-slim
+    working_dir: /app
+    volumes:
+      - ../frontend:/app
+    ports:
+      - "3000:3000"
+    command: sh -c "npm install && npm run dev -- --host"
+    depends_on:
+      - backend
+    restart: unless-stopped
