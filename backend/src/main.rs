@@ -165,7 +165,7 @@ async fn chat_completions(
 
     let prompt = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
 
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = mpsc::channel(1024); // Increased capacity for high-speed NPU
     
     // Spawn the inference task with the cloned engine
     tokio::spawn(async move {
@@ -175,6 +175,11 @@ async fn chat_completions(
     if req.stream.unwrap_or(false) {
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
             .map(|text| {
+                if text == "[DONE]" || text == "[ERROR]" {
+                    // We don't send these as data, just end the stream
+                    return None;
+                }
+
                 let chunk = ChatCompletionResponse {
                     id: "chat-123".to_string(),
                     object: "chat.completion.chunk".to_string(),
@@ -194,8 +199,9 @@ async fn chat_completions(
                         total_tokens: 0,
                     },
                 };
-                Ok::<Event, Infallible>(Event::default().data(serde_json::to_string(&chunk).unwrap()))
-            });
+                Some(Ok::<Event, Infallible>(Event::default().data(serde_json::to_string(&chunk).unwrap())))
+            })
+            .filter_map(|x| async move { x });
 
         Sse::new(stream).into_response()
     } else {

@@ -176,16 +176,18 @@ unsafe extern "C" fn rkllm_callback_wrapper(result: *mut RKLLMResult, _userdata:
         if let Some(tx) = guard.as_ref() {
             if !res.text.is_null() {
                 if let Ok(s) = CStr::from_ptr(res.text).to_str() {
+                    // Use a slightly larger buffer in the sender or handle errors
                     let _ = tx.try_send(s.to_string());
                 }
             }
 
             match state {
                 LLMCallState::RKLLM_RUN_FINISH => {
-                    let _ = tx.try_send("\n[DONE]".to_string());
+                    // Signal the end of the stream clearly
+                    let _ = tx.try_send("[DONE]".to_string());
                 }
                 LLMCallState::RKLLM_RUN_ERROR => {
-                    let _ = tx.try_send("\n[ERROR]".to_string());
+                    let _ = tx.try_send("[ERROR]".to_string());
                 }
                 _ => {}
             }
@@ -274,15 +276,9 @@ impl RKLLMEngine {
     }
 }
 
-impl Drop for RKLLMEngine {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.handle.is_null() {
-                rkllm_destroy(self.handle);
-            }
-        }
-    }
-}
+// NOTE: We do NOT implement Drop here because RKLLMEngine is often cloned.
+// The model handle is treated as a long-lived resource for the duration of the server.
+// If explicit model unloading is needed, we should implement a dedicated 'unload' method.
 
 unsafe impl Send for RKLLMEngine {}
 unsafe impl Sync for RKLLMEngine {}
