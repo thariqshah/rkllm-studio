@@ -12,14 +12,38 @@ use tower_http::cors::CorsLayer;
 use futures::stream::StreamExt;
 use std::path::{Path, PathBuf};
 
-mod rkllm;
-mod openai;
+// Use the official rkllm-rs crate
+use rkllm_rs::{LLMHandle, LLMConfig, RKLLMInput, RkllmCallbackHandler, RKLLMResult, LLMCallState};
 
-use rkllm::RKLLMEngine;
+mod openai;
 use openai::{Model, ModelList, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionChoice, ChatMessage, Usage};
 
 struct AppState {
-    engine: Mutex<Option<RKLLMEngine>>,
+    // LLMHandle is already thread-safe and reference counted internally by rkllm-rs
+    engine: Mutex<Option<LLMHandle>>,
+}
+
+// Handler that bridges the RKLLM callback to a Tokio mpsc channel
+struct StreamHandler {
+    tx: mpsc::Sender<String>,
+}
+
+impl RkllmCallbackHandler for StreamHandler {
+    fn handle(&self, result: RKLLMResult, state: LLMCallState) {
+        if let Some(text) = result.text {
+            let _ = self.tx.try_send(text);
+        }
+        
+        match state {
+            LLMCallState::Finish => {
+                let _ = self.tx.try_send("[DONE]".to_string());
+            }
+            LLMCallState::Error => {
+                let _ = self.tx.try_send("[ERROR]".to_string());
+            }
+            _ => {}
+        }
+    }
 }
 
 #[tokio::main]
@@ -31,7 +55,7 @@ async fn main() {
     });
 
     let app = Router::new()
-        .route("/", get(|| async { "RKLLama API Server is running!" }))
+        .route("/", get(|| async { "RKLLama API Server is running (using rkllm-rs)!" }))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/load", post(load_model))
@@ -71,7 +95,6 @@ async fn list_models() -> Json<ModelList> {
         find_rkllm_files(Path::new(path_str), &mut models);
     }
 
-    // Deduplicate by ID
     let mut seen = std::collections::HashSet::new();
     models.retain(|m| seen.insert(m.id.clone()));
 
@@ -127,25 +150,30 @@ async fn load_model(
     }
 
     let model_path_buf = match final_path {
-        Some(p) => {
-            match std::fs::canonicalize(&p) {
-                Ok(abs_path) => abs_path,
-                Err(_) => p,
-            }
-        },
+        Some(p) => std::fs::canonicalize(&p).unwrap_or(p),
         None => return (StatusCode::NOT_FOUND, "Model file not found").into_response(),
     };
     
     let model_path = model_path_buf.to_string_lossy().to_string();
-    tracing::info!("Loading model from absolute path: {}", model_path);
+    tracing::info!("Loading model using rkllm-rs: {}", model_path);
     
-    let engine = match RKLLMEngine::new(&model_path) {
-        Ok(e) => e,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load model: {}", e)).into_response(),
+    // Create config similar to our previous manual one
+    let mut config = LLMConfig::default();
+    config.model_path = model_path;
+    config.max_context_len = 2048;
+    config.max_new_tokens = 512;
+    config.top_k = 40;
+    config.top_p = 0.9;
+    config.temperature = 0.8;
+    
+    // Switch to rkllm-rs handles the FFI setup internally
+    let handle = match LLMHandle::init(config) {
+        Ok(h) => h,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to initialize RKLLM: {}", e)).into_response(),
     };
     
     let mut current_engine = state.engine.lock().await;
-    *current_engine = Some(engine);
+    *current_engine = Some(handle);
 
     Json(serde_json::Value::String("Model loaded successfully".to_string())).into_response()
 }
@@ -154,7 +182,6 @@ async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
-    // Clone the engine while the lock is held, then drop the lock immediately
     let engine = {
         let engine_opt = state.engine.lock().await;
         match engine_opt.as_ref() {
@@ -164,19 +191,22 @@ async fn chat_completions(
     };
 
     let prompt = req.messages.last().map(|m| m.content.clone()).unwrap_or_default();
-
-    let (tx, rx) = mpsc::channel(1024); // Increased capacity for high-speed NPU
+    let (tx, rx) = mpsc::channel(1024);
     
-    // Spawn the inference task with the cloned engine
-    tokio::spawn(async move {
-        let _ = engine.run(&prompt, tx).await;
+    let handler = StreamHandler { tx };
+
+    // Run inference in a blocking task because rkllm_run is synchronous in the underlying C
+    tokio::task::spawn_blocking(move || {
+        let input = RKLLMInput::Prompt(prompt);
+        if let Err(e) = engine.run(input, None, handler) {
+            tracing::error!("Inference error: {}", e);
+        }
     });
 
     if req.stream.unwrap_or(false) {
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
             .map(|text| {
                 if text == "[DONE]" || text == "[ERROR]" {
-                    // We don't send these as data, just end the stream
                     return None;
                 }
 

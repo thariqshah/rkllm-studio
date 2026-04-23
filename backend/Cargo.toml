@@ -13,6 +13,8 @@ tower-http = { version = "0.5", features = ["cors", "fs"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio-stream = "0.1"
+rkllm-rs = { git = "https://github.com/darkautism/rkllm-rs" }
+rkllm-sys-rs = { git = "https://github.com/darkautism/rkllm-rs" }
 futures = "0.3"
 async-trait = "0.1"
 libc = "0.2"
