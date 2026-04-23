@@ -159,33 +159,37 @@ pub struct RKLLMEngine {
     handle: LLMHandle,
 }
 
-struct CallbackCtx {
-    tx: mpsc::Sender<String>,
-    done_tx: mpsc::Sender<()>,
-    _prompt: CString,
+use std::sync::Mutex as StdMutex;
+
+// Thread-local sender for the callback to push tokens into.
+static CALLBACK_TX: std::sync::OnceLock<StdMutex<Option<mpsc::Sender<String>>>> = std::sync::OnceLock::new();
+
+fn get_callback_tx() -> &'static StdMutex<Option<mpsc::Sender<String>>> {
+    CALLBACK_TX.get_or_init(|| StdMutex::new(None))
 }
 
-unsafe extern "C" fn rkllm_callback_wrapper(result: *mut RKLLMResult, userdata: *mut c_void, state: LLMCallState) {
-    if userdata.is_null() || result.is_null() { return; }
-    
-    let ctx = &mut *(userdata as *mut CallbackCtx);
+unsafe extern "C" fn rkllm_callback_wrapper(result: *mut RKLLMResult, _userdata: *mut c_void, state: LLMCallState) {
+    if result.is_null() { return; }
     let res = &*result;
-    
-    if !res.text.is_null() {
-        if let Ok(s) = CStr::from_ptr(res.text).to_str() {
-            let _ = ctx.tx.try_send(s.to_string());
-        }
-    }
 
-    match state {
-        LLMCallState::RKLLM_RUN_FINISH | LLMCallState::RKLLM_RUN_ERROR => {
-            if state == LLMCallState::RKLLM_RUN_FINISH {
-                let _ = ctx.tx.try_send("\n[DONE]".to_string());
+    if let Ok(guard) = get_callback_tx().lock() {
+        if let Some(tx) = guard.as_ref() {
+            if !res.text.is_null() {
+                if let Ok(s) = CStr::from_ptr(res.text).to_str() {
+                    let _ = tx.try_send(s.to_string());
+                }
             }
-            let _ = ctx.done_tx.try_send(());
-            let _ = Box::from_raw(userdata as *mut CallbackCtx);
+
+            match state {
+                LLMCallState::RKLLM_RUN_FINISH => {
+                    let _ = tx.try_send("\n[DONE]".to_string());
+                }
+                LLMCallState::RKLLM_RUN_ERROR => {
+                    let _ = tx.try_send("\n[ERROR]".to_string());
+                }
+                _ => {}
+            }
         }
-        _ => {}
     }
 }
 
@@ -203,10 +207,16 @@ impl RKLLMEngine {
             param.top_p = 0.9;
             param.temperature = 0.8;
             param.repeat_penalty = 1.1;
-            param.is_async = true;
+            param.skip_special_token = true;
+            param.is_async = false; // Synchronous — matches working Python reference
             param.use_gpu = true;
+            param.n_keep = 0;
 
-            // Affinity for RK3588 Big Cores
+            // Extended params — match Python reference defaults
+            param.extend_param.base_domain_id = 1;
+            param.extend_param.embed_flash = 1;
+            param.extend_param.n_batch = 1;
+            param.extend_param.use_cross_attn = 0;
             param.extend_param.enabled_cpus_num = 4;
             param.extend_param.enabled_cpus_mask = (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7);
 
@@ -220,38 +230,47 @@ impl RKLLMEngine {
     }
 
     pub async fn run(&self, prompt: &str, tx: mpsc::Sender<String>) -> Result<(), String> {
-        let (done_tx, mut done_rx) = mpsc::channel(1);
         let c_prompt = CString::new(prompt).map_err(|_| "Invalid prompt")?;
-        
-        unsafe {
-            let ctx = Box::new(CallbackCtx { 
-                tx, 
-                done_tx, 
-                _prompt: c_prompt 
-            });
-            let userdata = Box::into_raw(ctx) as *mut c_void;
-            
-            let persistent_prompt_ptr = (*(userdata as *mut CallbackCtx))._prompt.as_ptr();
-            
-            let mut input = RKLLMInput {
-                role: ptr::null(),
-                enable_thinking: false,
-                input_type: RKLLM_INPUT_PROMPT,
-                input: RKLLMInputUnion { prompt: persistent_prompt_ptr },
-            };
-            
-            let mut infer_param = std::mem::zeroed::<RKLLMInferParam>();
-            infer_param.mode = 0;
-            
-            let ret = rkllm_run(self.handle, &mut input, &mut infer_param, userdata);
-            if ret != 0 {
-                let _ = Box::from_raw(userdata as *mut CallbackCtx);
-                return Err(format!("RKLLM run failed: {}", ret));
+        let handle_addr = self.handle as usize; // Cast to Send-safe type
+
+        // Install the sender into the global slot
+        {
+            let mut guard = get_callback_tx().lock().map_err(|e| format!("Lock error: {}", e))?;
+            *guard = Some(tx);
+        }
+
+        let result = tokio::task::spawn_blocking(move || {
+            unsafe {
+                let handle = handle_addr as *mut c_void;
+                let prompt_ptr = c_prompt.as_ptr();
+
+                let mut input = RKLLMInput {
+                    role: ptr::null(),
+                    enable_thinking: false,
+                    input_type: RKLLM_INPUT_PROMPT,
+                    input: RKLLMInputUnion { prompt: prompt_ptr },
+                };
+
+                let mut infer_param = std::mem::zeroed::<RKLLMInferParam>();
+                infer_param.mode = 0;
+
+                // Pass NULL userdata — matches Python reference exactly
+                let ret = rkllm_run(handle, &mut input, &mut infer_param, ptr::null_mut());
+                if ret != 0 {
+                    return Err(format!("RKLLM run failed: {}", ret));
+                }
+                Ok(())
+            }
+        }).await.map_err(|e| format!("Task join error: {}", e))?;
+
+        // Clear the sender after inference completes
+        {
+            if let Ok(mut guard) = get_callback_tx().lock() {
+                *guard = None;
             }
         }
-        
-        let _ = done_rx.recv().await;
-        Ok(())
+
+        result
     }
 }
 
