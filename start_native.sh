@@ -30,8 +30,8 @@ npm run dev -- --host &
 FRONTEND_PID=$!
 
 echo "--- Services are running! ---"
-echo "Dashboard: http://aitana:5173"
-echo "API:       http://aitana:8080"
+echo "Dashboard: http://aitana:8282"
+echo "API:       http://aitana:8181"
 echo "------------------------------"
 echo "Press Ctrl+C to stop both services."
 
