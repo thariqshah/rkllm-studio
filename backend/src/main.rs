@@ -31,6 +31,7 @@ async fn main() {
     });
 
     let app = Router::new()
+        .route("/", get(|| async { "RKLLama API Server is running!" }))
         .route("/v1/models", get(list_models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/load", post(load_model))
